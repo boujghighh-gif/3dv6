@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Hand Controlled Particles</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: sans-serif; }
+        canvas { display: block; width: 100vw; height: 100vh; }
+        
+        /* UI Overlay */
+        #overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            background: rgba(0,0,0,0.8); z-index: 10; color: white;
+            transition: opacity 0.5s;
+        }
+        #start-btn {
+            padding: 15px 40px; font-size: 1.2rem; background: #ff4500; color: white;
+            border: none; border-radius: 30px; cursor: pointer; text-transform: uppercase;
+            letter-spacing: 2px; box-shadow: 0 0 20px #ff4500;
+        }
+        #status {
+            position: absolute; top: 20px; left: 20px; color: #00ff88; 
+            font-size: 0.8rem; pointer-events: none; z-index: 5;
+        }
+        /* Hide the webcam video element, we only want the data */
+        .input_video { display: none; }
+    </style>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+    <div id="status">Waiting for camera...</div>
+
+    <div id="overlay">
+        <h1>Particle Control</h1>
+        <p>Show both hands to control the cube</p>
+        <button id="start-btn">Start Experience</button>
+    </div>
+
+    <video class="input_video"></video>
+    
+    <audio id="bg-music" loop>
+        <source src="  https://open.spotify.com/playlist/18vUeZ9BdtMRNV6gI8RnR6?si=K7nYkwr3QsmPiCkH10r6LA" type="audio/mp3">
+    </audio>
+
+    <script>
+        // --- CONFIGURATION ---
+        const PARTICLE_COUNT = 3000;
+        const PARTICLE_COLOR = 0xff4500; // Orange-Red like your image
+        const CUBE_SIZE = 2;
+        
+        // --- THREE.JS SETUP ---
+        const scene = new THREE.Scene();
+        // Add subtle fog for depth
+        scene.fog = new THREE.FogExp2(0x000000, 0.03);
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.z = 5;
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        document.body.appendChild(renderer.domElement);
+
+        // --- PARTICLE SYSTEM ---
+        const geometry = new THREE.BufferGeometry();
+        const positions = [];
+        const originalPositions = []; // To remember shape
+        
+        // Create a Cube of particles
+        for (let i = 0; i < PARTICLE_COUNT; i++) {
+            const x = (Math.random() - 0.5) * CUBE_SIZE;
+            const y = (Math.random() - 0.5) * CUBE_SIZE;
+            const z = (Math.random() - 0.5) * CUBE_SIZE;
+            positions.push(x, y, z);
+            originalPositions.push(x, y, z);
+        }
+
+        geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+
+        const material = new THREE.PointsMaterial({
+            color: PARTICLE_COLOR,
+            size: 0.05,
+            transparent: true,
+            opacity: 0.8,
+            blending: THREE.AdditiveBlending
+        });
+
+        const particles = new THREE.Points(geometry, material);
+        scene.add(particles);
+
+        // Grid helper to make it look like the simulation environment
+        const gridHelper = new THREE.GridHelper(10, 10, 0x333333, 0x111111);
+        gridHelper.position.y = -2;
+        scene.add(gridHelper);
+
+        // --- INTERACTION STATE ---
+        let targetScale = 1;
+        let currentScale = 1;
+        let isHandsDetected = false;
+
+        // --- MEDIAPIPE HANDS SETUP ---
+        const videoElement = document.getElementsByClassName('input_video')[0];
+        const statusText = document.getElementById('status');
+        
+        function onResults(results) {
+            // Check if we have detected hands
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length === 2) {
+                isHandsDetected = true;
+                statusText.innerText = "Hands Connected";
+                statusText.style.color = "#00ff88";
+
+                // Get coordinates of the wrist (landmark 0) or index finger (landmark 8) of both hands
+                const hand1 = results.multiHandLandmarks[0][8]; 
+                const hand2 = results.multiHandLandmarks[1][8];
+
+                // Calculate distance between hands (x and y only for simplicity on screen)
+                // MediaPipe coordinates are 0-1.
+                const dx = hand1.x - hand2.x;
+                const dy = hand1.y - hand2.y;
+                const distance = Math.sqrt(dx*dx + dy*dy);
+
+                // Map distance to scale. 
+                // Distance usually ranges 0.1 (close) to 0.8 (far apart)
+                // We map this to Scale 0.5 to 3.0
+                targetScale = Math.max(0.5, distance * 4);
+                
+                // Optional: Rotate cube based on hand midpoint
+                const midX = (hand1.x + hand2.x) / 2;
+                particles.rotation.y = (midX - 0.5) * 2; // Lean left/right
+
+            } else {
+                isHandsDetected = false;
+                statusText.innerText = "Show both hands...";
+                statusText.style.color = "#ffaa00";
+                // Slowly return to base scale if hands are lost
+                targetScale = 1; 
+            }
+        }
+
+        const hands = new Hands({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+        }});
+
+        hands.setOptions({
+            maxNumHands: 2,
+            modelComplexity: 1, // 0 for fastest (phones), 1 for average
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+        hands.onResults(onResults);
+
+        // --- START BUTTON & AUDIO LOGIC ---
+        const startBtn = document.getElementById('start-btn');
+        const overlay = document.getElementById('overlay');
+        const music = document.getElementById('bg-music');
+        let cameraObj = null;
+
+        startBtn.addEventListener('click', () => {
+            overlay.style.opacity = '0';
+            setTimeout(() => overlay.style.display = 'none', 500);
+            
+            // Play Music
+            music.volume = 0.5;
+            music.play().catch(e => console.log("Audio play failed", e));
+
+            // Start Camera
+            cameraObj = new Camera(videoElement, {
+                onFrame: async () => {
+                    await hands.send({image: videoElement});
+                },
+                width: 640,
+                height: 480
+            });
+            cameraObj.start();
+        });
+
+        // --- ANIMATION LOOP ---
+        const clock = new THREE.Clock();
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const time = clock.getElapsedTime();
+
+            // Smooth interpolation (LERP) for scale to make it feel fluid
+            currentScale += (targetScale - currentScale) * 0.1;
+            particles.scale.set(currentScale, currentScale, currentScale);
+
+            // Add some "fluid" noise to the particles
+            const positions = particles.geometry.attributes.position.array;
+            for(let i = 0; i < PARTICLE_COUNT; i++) {
+                const i3 = i * 3;
+                // Add a gentle wave motion based on original position
+                positions[i3 + 1] = originalPositions[i3+1] + Math.sin(time * 2 + originalPositions[i3] * 2) * 0.05 * currentScale;
+            }
+            particles.geometry.attributes.position.needsUpdate = true;
+
+            // Idle rotation
+            if(!isHandsDetected) {
+                particles.rotation.y += 0.005;
+                particles.rotation.z += 0.002;
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        // Handle Resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+    </script>
+</body>
+</html>
